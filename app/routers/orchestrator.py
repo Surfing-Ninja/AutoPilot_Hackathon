@@ -1,0 +1,413 @@
+# app/routers/orchestrator.py
+"""
+POST /api/process_lead — Multi-Agent Hub-and-Spoke Orchestrator
+
+Execution Flow
+──────────────
+1. Receive & validate the inbound lead payload.
+2. Fire 3 parallel data-extraction calls via asyncio.gather:
+     • OP-1  Web Intel        (company_name)
+     • OP-2  Comms Intel      (email_thread)
+     • OP-3  OCR / Doc Parse  (contract_text)
+3. Aggregate results → send to OP-4 Risk Assessor.
+4. Feed OP-4 output → ORCH-01 Governance Orchestrator (RAG policy).
+5. Route on the returned system_command:
+     ROUTE_TO_WORKBENCH        → mock DB insert
+     TRIGGER_SLACK_ESCALATION  → console warning
+     ROUTE_TO_CRM_AUTO         → mock CRM update
+6. Return a consolidated JSON envelope with decision, risk score,
+   routing result, per-agent payloads, and a full execution trace.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+import uuid
+from datetime import datetime
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
+from app.models.orchestration import ExecutionContext, WorkbenchItem
+
+from app.schemas.orchestrator import (
+    AgentResult,
+    ExecutionStep,
+    ExecutionTrace,
+    LeadProcessRequest,
+    LeadProcessResponse,
+    RoutingResult,
+)
+from app.services.supervity_client import execute_agent
+
+log = logging.getLogger("orchestrator.pipeline")
+
+router = APIRouter(prefix="/orchestrator", tags=["Orchestrator"])
+
+
+# ─────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────
+
+def _now_iso() -> str:
+    """UTC timestamp in ISO-8601."""
+    return datetime.utcnow().isoformat() + "Z"
+
+
+async def _call_agent(
+    alias: str,
+    inputs: dict[str, Any],
+) -> tuple[str, dict[str, Any], float]:
+    """
+    Wrapper that times an agent call and returns (alias, response, latency_ms).
+    Exceptions are caught so asyncio.gather never short-circuits.
+    """
+    start = time.perf_counter()
+    try:
+        result = await execute_agent(alias, inputs)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Unhandled error calling agent '%s': %s", alias, exc)
+        result = {"status": "error", "message": "API timeout"}
+
+    latency_ms = round((time.perf_counter() - start) * 1_000, 2)
+    return alias, result, latency_ms
+
+
+def _build_agent_result(
+    alias: str,
+    label: str,
+    response: dict[str, Any],
+    latency_ms: float,
+) -> AgentResult:
+    """Normalise a raw Supervity response into an AgentResult."""
+    from app.services.supervity_client import AGENT_IDS
+
+    is_error = response.get("status") == "error"
+    return AgentResult(
+        agent_id=AGENT_IDS.get(alias, "unknown"),
+        agent_alias=label,
+        status="error" if is_error else "success",
+        latency_ms=latency_ms,
+        payload=response,
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# ROUTING ACTIONS (Mock implementations)
+# ─────────────────────────────────────────────────────────────
+
+def _route_to_workbench(orchestrator_output: dict[str, Any]) -> RoutingResult:
+    """Mock: Insert a record into the Workbench table."""
+    ticket_id = str(uuid.uuid4())
+    log.info(
+        "📋 [WORKBENCH] Inserted ticket %s — lead requires manual review.",
+        ticket_id,
+    )
+    return RoutingResult(
+        command="ROUTE_TO_WORKBENCH",
+        action_taken="workbench_insert",
+        detail=f"Workbench ticket {ticket_id} created for manual human-in-the-loop review.",
+    )
+
+
+def _trigger_slack_escalation(orchestrator_output: dict[str, Any]) -> RoutingResult:
+    """Mock: Fire a Slack escalation alert."""
+    log.warning(
+        "🚨 [SLACK ESCALATION] High-risk lead detected! "
+        "Escalation triggered — notifying #risk-alerts channel. "
+        "Payload keys: %s",
+        list(orchestrator_output.keys()),
+    )
+    return RoutingResult(
+        command="TRIGGER_SLACK_ESCALATION",
+        action_taken="slack_escalation_sent",
+        detail="Slack escalation dispatched to #risk-alerts. VP of Sales has been notified.",
+    )
+
+
+def _route_to_crm_auto(orchestrator_output: dict[str, Any]) -> RoutingResult:
+    """Mock: Auto-update CRM with a successful lead conversion."""
+    crm_record_id = str(uuid.uuid4())
+    log.info(
+        "✅ [CRM] Auto-routed lead → CRM record %s created/updated.",
+        crm_record_id,
+    )
+    return RoutingResult(
+        command="ROUTE_TO_CRM_AUTO",
+        action_taken="crm_auto_update",
+        detail=f"CRM record {crm_record_id} auto-updated. Lead marked as qualified.",
+    )
+
+
+_ROUTING_TABLE: dict[str, Any] = {
+    "ROUTE_TO_WORKBENCH": _route_to_workbench,
+    "TRIGGER_SLACK_ESCALATION": _trigger_slack_escalation,
+    "ROUTE_TO_CRM_AUTO": _route_to_crm_auto,
+}
+
+
+# ─────────────────────────────────────────────────────────────
+# MAIN ENDPOINT
+# ─────────────────────────────────────────────────────────────
+
+@router.post(
+    "/process_lead",
+    response_model=LeadProcessResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Multi-Agent Lead Processing Pipeline",
+    description=(
+        "Orchestrates 5 Supervity AI agents in a hub-and-spoke pattern to "
+        "extract intelligence, assess risk, enforce governance policies, "
+        "and route the lead to the appropriate downstream system."
+    ),
+)
+async def process_lead(
+    payload: LeadProcessRequest,
+    db: Session = Depends(get_db)
+) -> LeadProcessResponse:
+    """
+    Full orchestration pipeline:
+      Parallel extraction → Risk synthesis → Governance → Routing
+    """
+    pipeline_start = time.perf_counter()
+    trace_steps: list[ExecutionStep] = []
+    agent_results: dict[str, AgentResult] = {}
+
+    log.info(
+        "━━━ Pipeline START for company='%s' ━━━",
+        payload.company_name,
+    )
+
+    # ── STEP 1 — Parallel Data Extraction (OP1 + OP2 + OP3) ─────────
+
+    extraction_tasks = [
+        _call_agent("web_intel", {"company_name": payload.company_name}),
+        _call_agent("comms_intel", {"email_thread": payload.email_thread}),
+        _call_agent("ocr_doc", {"contract_text": payload.contract_text}),
+    ]
+
+    (web_alias, web_resp, web_ms), \
+    (comms_alias, comms_resp, comms_ms), \
+    (ocr_alias, ocr_resp, ocr_ms) = await asyncio.gather(*extraction_tasks)
+
+    # Build normalised agent results
+    agent_results["web_intel"] = _build_agent_result(
+        "web_intel", "OP-1 Web Intel", web_resp, web_ms,
+    )
+    agent_results["comms_intel"] = _build_agent_result(
+        "comms_intel", "OP-2 Comms Intel", comms_resp, comms_ms,
+    )
+    agent_results["ocr_doc"] = _build_agent_result(
+        "ocr_doc", "OP-3 OCR/Doc Parse", ocr_resp, ocr_ms,
+    )
+
+    # Trace entries for the parallel phase
+    for alias, label, ms in [
+        ("web_intel", "OP-1 Web Intel", web_ms),
+        ("comms_intel", "OP-2 Comms Intel", comms_ms),
+        ("ocr_doc", "OP-3 OCR/Doc Parse", ocr_ms),
+    ]:
+        trace_steps.append(ExecutionStep(
+            step="parallel_extraction",
+            agent=label,
+            status=agent_results[alias].status,
+            latency_ms=ms,
+            timestamp=_now_iso(),
+        ))
+
+    log.info(
+        "✔ Parallel extraction complete — Web=%.0fms  Comms=%.0fms  OCR=%.0fms",
+        web_ms, comms_ms, ocr_ms,
+    )
+
+    # ── STEP 2 — Risk Synthesis (OP4) ────────────────────────────────
+
+    aggregated_intel: dict[str, Any] = {
+        "company_name": payload.company_name,
+        "web_intel": web_resp,
+        "comms_intel": comms_resp,
+        "ocr_doc_intel": ocr_resp,
+    }
+
+    risk_alias, risk_resp, risk_ms = await _call_agent(
+        "risk_assessor", aggregated_intel,
+    )
+
+    agent_results["risk_assessor"] = _build_agent_result(
+        "risk_assessor", "OP-4 Risk Assessor", risk_resp, risk_ms,
+    )
+    trace_steps.append(ExecutionStep(
+        step="risk_synthesis",
+        agent="OP-4 Risk Assessor",
+        status=agent_results["risk_assessor"].status,
+        latency_ms=risk_ms,
+        timestamp=_now_iso(),
+    ))
+
+    log.info("✔ Risk assessment complete — %.0f ms", risk_ms)
+
+    # ── STEP 3 — Governance Orchestration (ORCH-01) ──────────────────
+
+    governance_input: dict[str, Any] = {
+        "company_name": payload.company_name,
+        "risk_assessment": risk_resp,
+        "extraction_summary": {
+            "web_intel": web_resp,
+            "comms_intel": comms_resp,
+            "ocr_doc_intel": ocr_resp,
+        },
+    }
+
+    gov_alias, gov_resp, gov_ms = await _call_agent(
+        "governance", governance_input,
+    )
+
+    agent_results["governance"] = _build_agent_result(
+        "governance", "ORCH-01 Governance", gov_resp, gov_ms,
+    )
+    trace_steps.append(ExecutionStep(
+        step="governance_orchestration",
+        agent="ORCH-01 Governance",
+        status=agent_results["governance"].status,
+        latency_ms=gov_ms,
+        timestamp=_now_iso(),
+    ))
+
+    log.info("✔ Governance orchestration complete — %.0f ms", gov_ms)
+
+    # ── STEP 4 — Extract system_command & route ──────────────────────
+
+    system_command: str = (
+        gov_resp.get("system_command")
+        or gov_resp.get("systemCommand")
+        or gov_resp.get("command")
+        or "ROUTE_TO_WORKBENCH"  # safe default
+    )
+    # Normalise to upper-case to match our enum
+    system_command = system_command.strip().upper()
+
+    route_fn = _ROUTING_TABLE.get(system_command, _route_to_workbench)
+    routing_result: RoutingResult = route_fn(gov_resp)
+
+    trace_steps.append(ExecutionStep(
+        step="routing",
+        agent="system",
+        status="executed",
+        latency_ms=0.0,
+        timestamp=_now_iso(),
+    ))
+
+    # ── STEP 5 — Build response envelope ─────────────────────────────
+
+    total_ms = round((time.perf_counter() - pipeline_start) * 1_000, 2)
+
+    # Try to extract a numeric risk score from OP4
+    unified_risk: float | None = None
+    for key in ("risk_score", "riskScore", "unified_risk_score", "score"):
+        val = risk_resp.get(key)
+        if val is not None:
+            try:
+                unified_risk = float(val)
+            except (TypeError, ValueError):
+                pass
+            break
+
+    response = LeadProcessResponse(
+        success=True,
+        orchestrator_decision=gov_resp,
+        unified_risk_score=unified_risk,
+        system_command=system_command,
+        routing_result=routing_result,
+        agent_results=agent_results,
+        trace=ExecutionTrace(
+            total_latency_ms=total_ms,
+            steps=trace_steps,
+        ),
+    )
+
+    log.info(
+        "━━━ Pipeline COMPLETE for company='%s' — %s — %.0f ms total ━━━",
+        payload.company_name,
+        system_command,
+        total_ms,
+    )
+
+    # ── STEP 6 — Persist to Database ─────────────────────────────────
+    context_id = str(uuid.uuid4())
+    db_ctx = ExecutionContext(
+        id=context_id,
+        company_name=payload.company_name,
+        system_command=system_command,
+        unified_risk_score=unified_risk,
+        trace=response.trace.model_dump(mode="json"),
+        agent_results={k: v.model_dump(mode="json") for k, v in agent_results.items()},
+    )
+    db.add(db_ctx)
+
+    if system_command == "ROUTE_TO_WORKBENCH":
+        # Extract metadata from agent results
+        missing_fields = []
+        if "ocr_doc" in agent_results:
+            missing_fields = agent_results["ocr_doc"].payload.get("extraction", {}).get("missing_fields", [])
+        
+        risk_factors = risk_resp.get("risk_factors", [])
+        if not isinstance(risk_factors, list):
+            risk_factors = [risk_factors] if risk_factors else []
+
+        wb_item = WorkbenchItem(
+            execution_context_id=context_id,
+            company_name=payload.company_name,
+            risk_factors=risk_factors,
+            missing_fields=missing_fields,
+            status="pending"
+        )
+        db.add(wb_item)
+
+    db.commit()
+
+    return response
+
+# ─────────────────────────────────────────────────────────────
+# WORKBENCH ENDPOINTS
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/workbench-items")
+def list_workbench_items(db: Session = Depends(get_db)):
+    """Fetch pending workbench items for the exception queue."""
+    items = db.query(WorkbenchItem).filter(WorkbenchItem.status == "pending").order_by(WorkbenchItem.created_at.desc()).all()
+    
+    result = []
+    for item in items:
+        # Also fetch the context to send the agent_results to the UI
+        ctx = item.execution_context
+        result.append({
+            "id": item.id,
+            "company_name": item.company_name,
+            "status": item.status,
+            "risk_factors": item.risk_factors,
+            "missing_fields": item.missing_fields,
+            "created_at": item.created_at,
+            "orchestratorResult": {
+                "system_command": ctx.system_command,
+                "unified_risk_score": ctx.unified_risk_score,
+                "agent_results": ctx.agent_results,
+                "trace": ctx.trace
+            }
+        })
+    return result
+
+@router.post("/workbench-items/{item_id}/approve")
+def approve_workbench_item(item_id: str, db: Session = Depends(get_db)):
+    """Approve a workbench item."""
+    item = db.query(WorkbenchItem).filter(WorkbenchItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    item.status = "approved"
+    item.resolved_at = datetime.utcnow()
+    db.commit()
+    return {"success": True, "message": "Item approved successfully"}

@@ -1,5 +1,6 @@
 'use client'
 
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import {
   Card,
@@ -10,7 +11,7 @@ import {
 } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Icons } from '@/components/ui/icons'
-import { cn } from '@/lib/utils'
+import { apiClient } from '@/lib/api-client'
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -25,89 +26,70 @@ const itemVariants = {
   visible: { opacity: 1, y: 0 },
 }
 
-// Sample workbench tools
-const tools = [
-  {
-    id: 'ai-assistant',
-    title: 'AI Assistant',
-    description: 'Chat with your AI assistant for help with tasks',
-    icon: Icons.sparkles,
-    color: 'bg-gradient-to-br from-brand-navy to-brand-purple',
-    status: 'available',
-  },
-  {
-    id: 'automation',
-    title: 'Automation Builder',
-    description: 'Create and manage automated workflows',
-    icon: Icons.zap,
-    color: 'bg-gradient-to-br from-brand-cornflower to-brand-purple',
-    status: 'available',
-  },
-  {
-    id: 'analytics',
-    title: 'Analytics Dashboard',
-    description: 'View detailed analytics and reports',
-    icon: Icons.activity,
-    color: 'bg-gradient-to-br from-emerald-500 to-emerald-600',
-    status: 'coming-soon',
-  },
-  {
-    id: 'integrations',
-    title: 'Integrations',
-    description: 'Connect with third-party services',
-    icon: Icons.share,
-    color: 'bg-gradient-to-br from-amber-500 to-orange-500',
-    status: 'coming-soon',
-  },
-]
+interface OrchestratorResult {
+  system_command: string;
+  unified_risk_score: number | null;
+  routing_result?: { detail?: string; command?: string };
+  agent_results?: Record<string, {
+    agent_alias: string;
+    status: string;
+    payload: {
+      risk_assessment?: {
+        risk_factors?: string[];
+        risk_level?: string;
+      };
+      extraction?: {
+        missing_fields?: string[];
+        contract_value?: string;
+      };
+      analysis?: {
+        sentiment?: string;
+        urgency_level?: string;
+      };
+      [key: string]: unknown;
+    };
+  }>;
+}
 
-function ToolCard({ tool }: { tool: (typeof tools)[0] }) {
-  const Icon = tool.icon
-  const isComingSoon = tool.status === 'coming-soon'
-
-  return (
-    <motion.div variants={itemVariants}>
-      <Card
-        className={cn(
-          'h-full cursor-pointer transition-all duration-300',
-          isComingSoon && 'opacity-60'
-        )}
-      >
-        <CardHeader>
-          <div className='flex items-start justify-between'>
-            <div
-              className={cn(
-                'flex h-12 w-12 items-center justify-center rounded-xl text-white',
-                tool.color
-              )}
-            >
-              <Icon className='h-6 w-6' strokeWidth={1.5} />
-            </div>
-            {isComingSoon && (
-              <span className='rounded-full bg-muted px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-brand-muted'>
-                Coming Soon
-              </span>
-            )}
-          </div>
-          <CardTitle className='mt-4'>{tool.title}</CardTitle>
-          <CardDescription>{tool.description}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button
-            variant={isComingSoon ? 'outline' : 'default'}
-            className='w-full'
-            disabled={isComingSoon}
-          >
-            {isComingSoon ? 'Notify Me' : 'Open Tool'}
-            {!isComingSoon && <Icons.arrowRight className='ml-2 h-4 w-4' />}
-          </Button>
-        </CardContent>
-      </Card>
-    </motion.div>
-  )
+interface WorkbenchItemData {
+  id: string;
+  company_name: string;
+  status: string;
+  risk_factors: string[];
+  missing_fields: string[];
+  created_at: string;
+  orchestratorResult: OrchestratorResult;
 }
 
 export default function WorkbenchPage() {
+  const [items, setItems] = useState<WorkbenchItemData[]>([]);
+  const [loading, setLoading] = useState(true);
+  
+  const fetchItems = async () => {
+    try {
+      const data = await apiClient.get<WorkbenchItemData[]>('/api/orchestrator/workbench-items');
+      setItems(data);
+    } catch (e) {
+      console.error("Failed to fetch workbench items:", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchItems();
+  }, []);
+
+  const handleApprove = async (id: string) => {
+    try {
+      await apiClient.post(`/api/orchestrator/workbench-items/${id}/approve`);
+      // Remove item from UI or refetch
+      await fetchItems();
+    } catch (e) {
+      console.error("Failed to approve item:", e);
+    }
+  };
+
   return (
     <motion.div
       className='space-y-8'
@@ -121,50 +103,115 @@ export default function WorkbenchPage() {
           Workbench
         </h1>
         <p className='mt-2 text-lg text-muted-foreground'>
-          Access your AI tools and automation workflows.
+          Exception Queue — Human-in-the-loop review for AI-flagged items.
         </p>
       </motion.div>
 
-      {/* Tools Grid */}
-      <div className='grid gap-6 sm:grid-cols-2 lg:grid-cols-4'>
-        {tools.map((tool) => (
-          <ToolCard key={tool.id} tool={tool} />
-        ))}
-      </div>
+      {/* Exception Cards */}
+      <motion.div variants={itemVariants} className="space-y-4">
+        {loading ? (
+          <div className="text-center py-12">
+            <Icons.loader className="mx-auto h-8 w-8 animate-spin text-brand-cornflower mb-4" />
+            <p className="text-muted-foreground">Loading exceptions from Database...</p>
+          </div>
+        ) : items.length > 0 ? (
+          items.map((item) => {
+            const riskFactors = item.risk_factors || [];
+            const missingFields = item.missing_fields || [];
+            const orchestratorResult = item.orchestratorResult;
 
-      {/* Quick Actions */}
-      <motion.div variants={itemVariants}>
-        <Card>
-          <CardHeader>
-            <CardTitle className='flex items-center gap-2'>
-              <Icons.zap className='h-5 w-5 text-brand-cornflower' />
-              Quick Actions
-            </CardTitle>
-            <CardDescription>
-              Frequently used actions for faster access
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className='flex flex-wrap gap-3'>
-              <Button variant='outline' size='sm'>
-                <Icons.plus className='mr-2 h-4 w-4' />
-                New Task
-              </Button>
-              <Button variant='outline' size='sm'>
-                <Icons.fileText className='mr-2 h-4 w-4' />
-                Generate Report
-              </Button>
-              <Button variant='outline' size='sm'>
-                <Icons.mail className='mr-2 h-4 w-4' />
-                Send Notification
-              </Button>
-              <Button variant='outline' size='sm'>
-                <Icons.download className='mr-2 h-4 w-4' />
-                Export Data
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+            return (
+              <Card key={item.id} className="border-l-4 border-red-500 shadow-xl relative overflow-hidden mb-6">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-red-600 flex items-center gap-2 text-xl">
+                      <Icons.alertCircle className="h-6 w-6" />
+                      [URGENT REVIEW] {item.company_name}
+                    </CardTitle>
+                    <span className="px-3 py-1 text-xs font-bold bg-red-100 text-red-700 rounded-full uppercase tracking-wider">
+                      High Risk
+                    </span>
+                  </div>
+                  <CardDescription className="text-base text-slate-600 mt-2">
+                    Deal flagged by AI Governance due to multiple risk indicators.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {/* Risk Score */}
+                  <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-lg">
+                    <div className="text-center">
+                      <p className="text-3xl font-bold text-red-600">{orchestratorResult?.unified_risk_score ?? '—'}</p>
+                      <p className="text-xs text-slate-500 uppercase font-semibold">Risk Score</p>
+                    </div>
+                    <div className="flex-1 h-3 bg-slate-200 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-yellow-400 via-orange-500 to-red-600 rounded-full transition-all duration-500"
+                        style={{ width: `${Math.min(orchestratorResult?.unified_risk_score ?? 0, 100)}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Risk Factors */}
+                  {riskFactors.length > 0 && (
+                    <div>
+                      <p className="text-sm font-semibold text-slate-700 mb-2">Risk Factors Identified:</p>
+                      <ul className="space-y-1">
+                        {riskFactors.map((factor: string, i: number) => (
+                          <li key={i} className="flex items-start gap-2 text-sm text-slate-600">
+                            <Icons.alertTriangle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+                            {factor}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Missing Fields */}
+                  {missingFields.length > 0 && (
+                    <div>
+                      <p className="text-sm font-semibold text-slate-700 mb-2">Missing Contract Fields:</p>
+                      <ul className="space-y-1">
+                        {missingFields.map((field: string, i: number) => (
+                          <li key={i} className="flex items-start gap-2 text-sm text-slate-600">
+                            <Icons.fileText className="h-4 w-4 text-red-400 mt-0.5 shrink-0" />
+                            {field}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Actions */}
+                  <div className="flex justify-between items-center pt-4 border-t border-slate-100">
+                    <div className="text-sm text-slate-500 font-medium">
+                      Command: <span className="font-mono text-xs bg-slate-200 px-2 py-1 rounded text-slate-700">{orchestratorResult?.system_command}</span>
+                    </div>
+                    <div className="space-x-3">
+                      <Button variant="outline" onClick={() => window.location.href = '/ai/insights'}>
+                        View Full Trace
+                      </Button>
+                      <Button
+                        variant="default"
+                        className="bg-red-600 hover:bg-red-700 text-white font-bold"
+                        onClick={() => handleApprove(item.id)}
+                      >
+                        Override &amp; Approve
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })
+        ) : (
+          <Card>
+            <CardContent className="p-16 text-center text-muted-foreground">
+              <Icons.checkCircle className="mx-auto h-12 w-12 text-emerald-500 mb-4 opacity-50" />
+              <p className="text-lg font-medium text-slate-700">All clear!</p>
+              <p className="text-sm">No exceptions currently in the database. Run a pipeline from the Dashboard to see results here.</p>
+            </CardContent>
+          </Card>
+        )}
       </motion.div>
     </motion.div>
   )

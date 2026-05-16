@@ -42,6 +42,8 @@ from .routers import (
     examples_router,
     health_router,
     items_router,
+    orchestrator_router,
+    policies_router,
 )
 from .security import get_current_user, verify_access
 
@@ -154,7 +156,11 @@ api_router.include_router(items_router)
 # Authorization pattern examples
 api_router.include_router(examples_router)
 
+# Multi-agent orchestration pipeline
+api_router.include_router(orchestrator_router)
 
+# AI Policies mock endpoint
+api_router.include_router(policies_router)
 # =============================================================================
 # FILE STORAGE ENDPOINTS (kept inline for path matching order)
 # =============================================================================
@@ -223,6 +229,13 @@ async def delete_file(
 # =============================================================================
 
 app.include_router(api_router)
+
+
+# Gracefully close Supervity HTTP connection pool on shutdown
+@app.on_event("shutdown")
+async def _shutdown_supervity_client():
+    from .services.supervity_client import shutdown_client
+    await shutdown_client()
 
 
 # =============================================================================
