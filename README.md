@@ -63,8 +63,11 @@ make up
 
 **Windows (PowerShell):**
 ```powershell
-docker compose up --build -d
+.\scripts\start.ps1
 ```
+
+> This script clears WSL2 port conflicts, starts Docker, and verifies all services are reachable.
+> You can still use `docker compose up --build -d` directly, but the script handles a common Windows networking issue automatically.
 
 > First run takes 2-5 minutes to download images and build containers. Subsequent runs use cache and start in ~15 seconds.
 
@@ -333,6 +336,7 @@ AutoPilot-Template/
 | **Port 5432 already in use** | You have a local PostgreSQL running. Stop it or change the port in `docker-compose.yml` |
 | **`make` not found (Windows)** | Use `docker compose` commands directly (see table above) or install make via `choco install make` |
 | **WSL error (Windows)** | Run `wsl --install` in PowerShell as Admin, then restart your PC |
+| **ERR_CONNECTION_RESET on localhost (Windows)** | WSL2's relay can intercept port 3001 via IPv6. Use `.\scripts\start.ps1` which handles this automatically, or manually run `wsl --shutdown` before `docker compose up --build -d`. |
 | **Containers crash-looping** | Check logs: `docker compose logs backend` — usually a missing env var or DB issue |
 | **Frontend shows blank page** | Check if backend is healthy: `curl http://localhost:8001/api/health` |
 | **Database connection refused** | Wait 10-15 seconds after startup — Postgres needs time to initialize on first run |
