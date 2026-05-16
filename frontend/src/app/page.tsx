@@ -347,7 +347,8 @@ function WorkflowTrigger() {
       };
 
       try {
-          const response = await fetch("http://localhost:8001/api/orchestrator/process_lead", {
+          const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
+          const response = await fetch(`${apiUrl}/api/orchestrator/process_lead`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(mockLeadData)

@@ -1,0 +1,52 @@
+# render.yaml — Render Infrastructure-as-Code for Enterprise AI Orchestrator
+services:
+  # ------------------------------------------------------------
+  # FastAPI Backend Service
+  # ------------------------------------------------------------
+  - type: web
+    name: autopilot-backend
+    env: docker
+    dockerfilePath: Dockerfile
+    dockerContext: .
+    plan: starter
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DATABASE_URL
+        sync: false # Set in the Render Dashboard
+      - key: SUPERVITY_EXECUTE_URL
+        sync: false # Set in the Render Dashboard
+      - key: SUPERVITY_AUTH_TOKEN
+        sync: false # Set in the Render Dashboard
+      - key: SUPERVITY_OP1_ID
+        sync: false # Set in the Render Dashboard
+      - key: SUPERVITY_OP2_ID
+        sync: false # Set in the Render Dashboard
+      - key: SUPERVITY_OP3_ID
+        sync: false # Set in the Render Dashboard
+      - key: SUPERVITY_OP4_ID
+        sync: false # Set in the Render Dashboard
+      - key: SUPERVITY_ORCHESTRATOR_ID
+        sync: false # Set in the Render Dashboard
+      - key: AUTH_BYPASS
+        value: "true"
+
+  # ------------------------------------------------------------
+  # Next.js Frontend Service
+  # ------------------------------------------------------------
+  - type: web
+    name: autopilot-frontend
+    env: docker
+    dockerfilePath: frontend/Dockerfile
+    dockerContext: frontend
+    plan: starter
+    envVars:
+      - key: NODE_ENV
+        value: production
+    dockerBuildArgs:
+      # Crucial: Next.js bakes public env vars at BUILD time
+      # Replace the value below with your actual deployed Backend URL on Render once created.
+      - key: NEXT_PUBLIC_API_URL
+        value: https://autopilot-backend.onrender.com
