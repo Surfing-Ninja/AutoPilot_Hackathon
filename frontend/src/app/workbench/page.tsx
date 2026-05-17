@@ -93,15 +93,15 @@ export default function WorkbenchPage() {
   const fetchItems = useCallback(async () => {
     setLoading(true);
     try {
-      const query = activeFilter === 'all' ? '' : `?status_filter=${activeFilter}`;
-      const data = await apiClient.get<WorkbenchItemData[]>(`/api/orchestrator/workbench-items${query}`);
+      // Always fetch all items, filter client-side for reliability
+      const data = await apiClient.get<WorkbenchItemData[]>(`/api/orchestrator/workbench-items`);
       setItems(data);
     } catch (e) {
       console.error("Failed to fetch workbench items:", e);
     } finally {
       setLoading(false);
     }
-  }, [activeFilter]);
+  }, []);
 
   useEffect(() => {
     fetchItems();
@@ -111,9 +111,13 @@ export default function WorkbenchPage() {
     setActionLoading(id);
     try {
       await apiClient.post(`/api/orchestrator/workbench-items/${id}/approve`);
-      await fetchItems();
+      // Optimistic UI update — change status immediately
+      setItems(prev => prev.map(item =>
+        item.id === id ? { ...item, status: 'approved', resolved_at: new Date().toISOString() } : item
+      ));
     } catch (e) {
       console.error("Failed to approve item:", e);
+      alert("Failed to approve item. Check console for details.");
     } finally {
       setActionLoading(null);
     }
@@ -123,9 +127,13 @@ export default function WorkbenchPage() {
     setActionLoading(id);
     try {
       await apiClient.post(`/api/orchestrator/workbench-items/${id}/reject`);
-      await fetchItems();
+      // Optimistic UI update
+      setItems(prev => prev.map(item =>
+        item.id === id ? { ...item, status: 'rejected', resolved_at: new Date().toISOString() } : item
+      ));
     } catch (e) {
       console.error("Failed to reject item:", e);
+      alert("Failed to reject item. Check console for details.");
     } finally {
       setActionLoading(null);
     }
@@ -136,9 +144,11 @@ export default function WorkbenchPage() {
     setActionLoading(id);
     try {
       await apiClient.delete(`/api/orchestrator/workbench-items/${id}`);
-      await fetchItems();
+      // Optimistic UI update — remove from list immediately
+      setItems(prev => prev.filter(item => item.id !== id));
     } catch (e) {
       console.error("Failed to delete item:", e);
+      alert("Failed to delete item. Check console for details.");
     } finally {
       setActionLoading(null);
     }
@@ -153,6 +163,7 @@ export default function WorkbenchPage() {
   };
 
   const pendingCount = items.filter(i => i.status === 'pending').length;
+  const filteredItems = activeFilter === 'all' ? items : items.filter(i => i.status === activeFilter);
 
   return (
     <motion.div
@@ -222,9 +233,9 @@ export default function WorkbenchPage() {
             <Icons.loader className="mx-auto h-8 w-8 animate-spin text-brand-cornflower mb-4" />
             <p className="text-muted-foreground">Loading from database...</p>
           </div>
-        ) : items.length > 0 ? (
+        ) : filteredItems.length > 0 ? (
           <AnimatePresence mode="popLayout">
-            {items.map((item) => {
+            {filteredItems.map((item) => {
               const riskFactors = item.risk_factors || [];
               const missingFields = item.missing_fields || [];
               const orchestratorResult = item.orchestratorResult;
