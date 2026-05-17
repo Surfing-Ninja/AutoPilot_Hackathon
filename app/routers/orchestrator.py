@@ -161,46 +161,74 @@ async def _trigger_slack_escalation(orchestrator_output: dict[str, Any]) -> Rout
 
 
 async def _route_to_crm_auto(orchestrator_output: dict[str, Any]) -> RoutingResult:
-    """Auto-update CRM with a successful lead conversion via API push."""
+    """Auto-update CRM with a successful lead conversion via API push.
+    
+    Supports two modes:
+    - If CRM_API_URL is a Slack webhook, sends a formatted Slack message.
+    - If CRM_API_URL is a standard REST API, sends JSON with Bearer auth.
+    """
     crm_url = os.getenv("CRM_API_URL")
     crm_key = os.getenv("CRM_API_KEY", "")
     
     company = orchestrator_output.get("company_name", "Unknown Company")
-    
-    payload = {
-        "lead_source": "AutoPilot Orchestrator",
-        "company_name": company,
-        "status": "Qualified",
-        "orchestrator_data": orchestrator_output
-    }
-    
-    if crm_url:
-        try:
-            headers = {"Authorization": f"Bearer {crm_key}"} if crm_key else {}
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(crm_url, json=payload, headers=headers, timeout=5.0)
-                resp.raise_for_status()
-            
-            log.info("✅ [CRM] Auto-routed lead %s to CRM successfully.", company)
-            return RoutingResult(
-                command="ROUTE_TO_CRM_AUTO",
-                action_taken="crm_auto_update",
-                detail="CRM record created/updated successfully via API.",
-            )
-        except Exception as e:
-            log.error("Failed to update CRM for %s: %s", company, e)
-            return RoutingResult(
-                command="ROUTE_TO_CRM_AUTO",
-                action_taken="crm_update_failed",
-                detail=f"Failed to update external CRM: {e}",
-            )
-    else:
+    risk_score = orchestrator_output.get("risk_score", orchestrator_output.get("unified_risk_score", "N/A"))
+    reasoning = orchestrator_output.get("reasoning", "Lead qualified by AI pipeline.")
+
+    if not crm_url:
         crm_record_id = str(uuid.uuid4())
         log.info("✅ [CRM] Auto-routed lead %s (Simulated) → CRM record %s.", company, crm_record_id)
         return RoutingResult(
             command="ROUTE_TO_CRM_AUTO",
             action_taken="crm_auto_update_simulated",
             detail=f"CRM update simulated (CRM_API_URL not set). Assigned mock ID: {crm_record_id}",
+        )
+
+    # Detect if CRM_API_URL is actually a Slack webhook
+    is_slack_webhook = "hooks.slack.com" in crm_url
+
+    try:
+        async with httpx.AsyncClient() as client:
+            if is_slack_webhook:
+                # Format a rich Slack message for CRM-style notifications
+                slack_payload = {
+                    "text": (
+                        f"✅ *CRM Auto-Update: {company}*\n"
+                        f"*Status:* Qualified Lead\n"
+                        f"*Risk Score:* {risk_score}\n"
+                        f"*Reasoning:* {reasoning}\n"
+                        f"*Source:* AutoPilot AI Orchestrator\n"
+                        f"*Timestamp:* {_now_iso()}"
+                    )
+                }
+                resp = await client.post(crm_url, json=slack_payload, timeout=5.0)
+            else:
+                # Standard REST CRM API call
+                crm_payload = {
+                    "lead_source": "AutoPilot Orchestrator",
+                    "company_name": company,
+                    "status": "Qualified",
+                    "risk_score": risk_score,
+                    "reasoning": reasoning,
+                    "orchestrator_data": orchestrator_output,
+                }
+                headers = {"Authorization": f"Bearer {crm_key}"} if crm_key else {}
+                resp = await client.post(crm_url, json=crm_payload, headers=headers, timeout=5.0)
+            
+            resp.raise_for_status()
+        
+        target = "Slack CRM channel" if is_slack_webhook else "CRM API"
+        log.info("✅ [CRM] Auto-routed lead %s to %s successfully.", company, target)
+        return RoutingResult(
+            command="ROUTE_TO_CRM_AUTO",
+            action_taken="crm_auto_update",
+            detail=f"CRM record dispatched to {target} successfully.",
+        )
+    except Exception as e:
+        log.error("Failed to update CRM for %s: %s", company, e)
+        return RoutingResult(
+            command="ROUTE_TO_CRM_AUTO",
+            action_taken="crm_update_failed",
+            detail=f"Failed to update CRM: {e}",
         )
 
 
@@ -551,6 +579,38 @@ def run_diagnostics(db: Session = Depends(get_db)):
         "detail": f"{agents_configured}/{len(AGENT_IDS)} agents configured",
         "count": agents_configured,
     })
+
+    # ── Slack Integration ──
+    slack_url = os.getenv("SLACK_WEBHOOK_URL")
+    if slack_url:
+        checks.append({
+            "name": "Slack Integration",
+            "status": "healthy",
+            "detail": "Webhook configured — live escalations enabled",
+        })
+    else:
+        checks.append({
+            "name": "Slack Integration",
+            "status": "warning",
+            "detail": "SLACK_WEBHOOK_URL not set — escalations will be simulated",
+        })
+
+    # ── CRM Integration ──
+    crm_url = os.getenv("CRM_API_URL")
+    if crm_url:
+        is_slack = "hooks.slack.com" in crm_url
+        mode = "Slack webhook (CRM channel)" if is_slack else "REST API"
+        checks.append({
+            "name": "CRM Integration",
+            "status": "healthy",
+            "detail": f"Connected via {mode}",
+        })
+    else:
+        checks.append({
+            "name": "CRM Integration",
+            "status": "warning",
+            "detail": "CRM_API_URL not set — CRM updates will be simulated",
+        })
 
     # ── Latest Pipeline Run ──
     try:
