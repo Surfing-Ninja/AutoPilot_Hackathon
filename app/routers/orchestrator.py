@@ -465,33 +465,72 @@ async def process_lead(
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/workbench-items")
-def list_workbench_items(db: Session = Depends(get_db)):
-    """Fetch pending workbench items for the exception queue."""
-    items = db.query(WorkbenchItem).filter(WorkbenchItem.status == "pending").order_by(WorkbenchItem.created_at.desc()).all()
+def list_workbench_items(
+    status_filter: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Fetch workbench items for the exception queue.
+    
+    Query params:
+        status_filter: 'pending', 'approved', 'rejected', or None for all.
+    """
+    query = db.query(WorkbenchItem).order_by(WorkbenchItem.created_at.desc())
+    if status_filter:
+        query = query.filter(WorkbenchItem.status == status_filter)
+    
+    items = query.all()
     
     result = []
     for item in items:
-        # Also fetch the context to send the agent_results to the UI
         ctx = item.execution_context
+        ctx_data = {}
+        if ctx:
+            ctx_data = {
+                "system_command": ctx.system_command,
+                "unified_risk_score": ctx.unified_risk_score,
+                "agent_results": ctx.agent_results,
+                "trace": ctx.trace,
+            }
         result.append({
             "id": item.id,
             "company_name": item.company_name,
             "status": item.status,
-            "risk_factors": item.risk_factors,
-            "missing_fields": item.missing_fields,
-            "created_at": item.created_at,
-            "orchestratorResult": {
-                "system_command": ctx.system_command,
-                "unified_risk_score": ctx.unified_risk_score,
-                "agent_results": ctx.agent_results,
-                "trace": ctx.trace
-            }
+            "risk_factors": item.risk_factors or [],
+            "missing_fields": item.missing_fields or [],
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+            "resolved_at": item.resolved_at.isoformat() if item.resolved_at else None,
+            "orchestratorResult": ctx_data,
         })
     return result
 
+
+async def _notify_slack_workbench_action(company: str, action: str, risk_score: float | None = None):
+    """Send a Slack notification when a workbench item is approved or rejected."""
+    webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+    if not webhook_url:
+        return
+    
+    emoji = "✅" if action == "approved" else "❌"
+    payload = {
+        "text": (
+            f"{emoji} *Workbench Item {action.upper()}: {company}*\n"
+            f"*Risk Score:* {risk_score or 'N/A'}\n"
+            f"*Action:* Human reviewer {action} this item.\n"
+            f"*Timestamp:* {_now_iso()}"
+        )
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(webhook_url, json=payload, timeout=5.0)
+            resp.raise_for_status()
+        log.info("📤 [SLACK] Workbench %s notification sent for %s", action, company)
+    except Exception as e:
+        log.error("Failed to send Slack workbench notification: %s", e)
+
+
 @router.post("/workbench-items/{item_id}/approve")
-def approve_workbench_item(item_id: str, db: Session = Depends(get_db)):
-    """Approve a workbench item."""
+async def approve_workbench_item(item_id: str, db: Session = Depends(get_db)):
+    """Approve a workbench item and notify Slack."""
     item = db.query(WorkbenchItem).filter(WorkbenchItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -499,7 +538,43 @@ def approve_workbench_item(item_id: str, db: Session = Depends(get_db)):
     item.status = "approved"
     item.resolved_at = datetime.utcnow()
     db.commit()
-    return {"success": True, "message": "Item approved successfully"}
+
+    # Get risk score from execution context
+    risk_score = item.execution_context.unified_risk_score if item.execution_context else None
+    await _notify_slack_workbench_action(item.company_name, "approved", risk_score)
+    
+    return {"success": True, "message": f"{item.company_name} approved successfully"}
+
+
+@router.post("/workbench-items/{item_id}/reject")
+async def reject_workbench_item(item_id: str, db: Session = Depends(get_db)):
+    """Reject/dismiss a workbench item and notify Slack."""
+    item = db.query(WorkbenchItem).filter(WorkbenchItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    item.status = "rejected"
+    item.resolved_at = datetime.utcnow()
+    db.commit()
+
+    risk_score = item.execution_context.unified_risk_score if item.execution_context else None
+    await _notify_slack_workbench_action(item.company_name, "rejected", risk_score)
+    
+    return {"success": True, "message": f"{item.company_name} rejected and dismissed"}
+
+
+@router.delete("/workbench-items/{item_id}")
+async def delete_workbench_item(item_id: str, db: Session = Depends(get_db)):
+    """Permanently delete a workbench item."""
+    item = db.query(WorkbenchItem).filter(WorkbenchItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    company = item.company_name
+    db.delete(item)
+    db.commit()
+    
+    return {"success": True, "message": f"{company} removed from workbench"}
 
 # ─────────────────────────────────────────────────────────────
 # SYSTEM DIAGNOSTICS

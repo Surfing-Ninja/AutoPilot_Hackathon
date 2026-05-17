@@ -86,6 +86,7 @@ import {
   GripVertical,
   Repeat,
   Flag,
+  XCircle,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -146,6 +147,7 @@ export const Icons = {
   info: Info,
   helpCircle: HelpCircle,
   help: HelpCircle,
+  xCircle: XCircle,
 
   // Visibility
   eye: Eye,
