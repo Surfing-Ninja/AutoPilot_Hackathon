@@ -193,104 +193,254 @@ function HeroSection({ userName }: { userName?: string }) {
   )
 }
 
-// Diagnostics Card
-function DiagnosticsCard() {
-  const [apiResponse, setApiResponse] = useState<string>('')
-  const [adminResponse, setAdminResponse] = useState<string>('')
-  const [isLoading, setIsLoading] = useState(false)
+// Diagnostics types
+interface DiagCheck {
+  name: string;
+  status: 'healthy' | 'warning' | 'error' | 'info';
+  detail: string;
+  count?: number;
+  timestamp?: string;
+}
 
-  const callApi = async (
-    endpoint: string,
-    setter: React.Dispatch<React.SetStateAction<string>>
-  ) => {
-    setIsLoading(true)
-    setter('Loading...')
+interface DiagResult {
+  overall: string;
+  checks: DiagCheck[];
+  timestamp: string;
+}
+
+// Audit log type
+interface AuditLogEntry {
+  id: number;
+  timestamp: string;
+  actor_email: string | null;
+  action: string;
+  category: string;
+  description: string;
+  success: string;
+  endpoint: string | null;
+  http_method: string | null;
+  response_status: number | null;
+  response_time_ms: number | null;
+  is_middleware: boolean;
+}
+
+const statusColors: Record<string, string> = {
+  healthy: 'bg-emerald-500',
+  warning: 'bg-amber-500',
+  error: 'bg-red-500',
+  info: 'bg-blue-500',
+};
+
+const statusBg: Record<string, string> = {
+  healthy: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  warning: 'bg-amber-50 text-amber-700 border-amber-200',
+  error: 'bg-red-50 text-red-700 border-red-200',
+  info: 'bg-blue-50 text-blue-700 border-blue-200',
+};
+
+const methodColors: Record<string, string> = {
+  GET: 'bg-emerald-100 text-emerald-700',
+  POST: 'bg-blue-100 text-blue-700',
+  PUT: 'bg-amber-100 text-amber-700',
+  DELETE: 'bg-red-100 text-red-700',
+};
+
+// Real System Diagnostics Card
+function DiagnosticsCard() {
+  const [diagResult, setDiagResult] = useState<DiagResult | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const runDiagnostics = async () => {
+    setIsLoading(true);
     try {
-      const data = await apiClient(endpoint)
-      setter(JSON.stringify(data, null, 2))
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
+      const res = await fetch(`${apiUrl}/api/orchestrator/diagnostics`);
+      const data = await res.json();
+      setDiagResult(data);
     } catch (error) {
-      setter(
-        `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
-      )
+      setDiagResult({
+        overall: 'error',
+        checks: [{ name: 'Backend Connection', status: 'error', detail: error instanceof Error ? error.message : 'Failed to reach backend' }],
+        timestamp: new Date().toISOString(),
+      });
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
-  }
+  };
 
   return (
-    <Card className='relative col-span-12 h-full overflow-hidden'>
+    <Card className='relative col-span-12 lg:col-span-5 h-full overflow-hidden'>
       <CardWatermark opacity={3} scale={1.1} />
       <CardHeader className='relative z-10'>
         <CardTitle className='flex items-center gap-2'>
-          <Icons.activity
-            className='h-5 w-5 text-brand-cornflower'
-            strokeWidth={1.5}
-          />
+          <Icons.activity className='h-5 w-5 text-brand-cornflower' strokeWidth={1.5} />
           System Diagnostics
+          {diagResult && (
+            <span className={`ml-auto inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${statusBg[diagResult.overall] || statusBg.info}`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${statusColors[diagResult.overall] || statusColors.info}`} />
+              {diagResult.overall.toUpperCase()}
+            </span>
+          )}
         </CardTitle>
       </CardHeader>
-      <CardContent className='relative z-10 space-y-6'>
-        <div className='space-y-3'>
-          <div className='flex items-center justify-between'>
-            <div>
-              <p className='text-sm font-medium text-foreground'>
-                Standard Authorization
-              </p>
-              <p className='mt-0.5 font-mono text-xs text-muted-foreground'>
-                /api/test
-              </p>
-            </div>
-          </div>
-          <Button
-            onClick={() => callApi('/api/test', setApiResponse)}
-            disabled={isLoading}
-            variant='outline'
-            className='w-full'
-          >
-            {isLoading ? 'Running...' : 'Run Diagnostics'}
-          </Button>
-          {apiResponse && (
-            <div className='rounded-xl border border-border/50 bg-muted/30 p-4'>
-              <pre className='overflow-x-auto font-mono text-xs text-muted-foreground'>
-                <code>{apiResponse}</code>
-              </pre>
-            </div>
+      <CardContent className='relative z-10 space-y-4'>
+        <Button
+          onClick={runDiagnostics}
+          disabled={isLoading}
+          variant='gradient'
+          className='w-full'
+        >
+          {isLoading ? (
+            <><span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent mr-2" />Running Diagnostics...</>
+          ) : (
+            <><Icons.activity className='mr-2 h-4 w-4' />Run System Diagnostics</>
           )}
-        </div>
+        </Button>
 
-        <div className='h-px bg-border/50' />
-
-        <div className='space-y-3'>
-          <div className='flex items-center justify-between'>
-            <div>
-              <p className='text-sm font-medium text-foreground'>
-                Admin Verification
-              </p>
-              <p className='mt-0.5 font-mono text-xs text-muted-foreground'>
-                /api/admin/dashboard
-              </p>
-            </div>
+        {diagResult && (
+          <div className='space-y-1.5'>
+            {diagResult.checks.map((check, i) => (
+              <div key={i} className='flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-slate-50 transition-colors'>
+                <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${statusColors[check.status] || 'bg-slate-400'}`} />
+                <span className='text-sm font-medium text-brand-navy flex-1 truncate'>{check.name}</span>
+                <span className='text-xs text-muted-foreground text-right max-w-[200px] truncate'>{check.detail}</span>
+              </div>
+            ))}
+            <p className='text-[10px] text-muted-foreground text-right pt-1'>
+              Last checked: {new Date(diagResult.timestamp).toLocaleTimeString()}
+            </p>
           </div>
-          <Button
-            onClick={() => callApi('/api/admin/dashboard', setAdminResponse)}
-            disabled={isLoading}
-            variant='gradient'
-            className='w-full'
-          >
-            {isLoading ? 'Verifying...' : 'Verify Admin Access'}
-            <Icons.arrowRight className='ml-2 h-4 w-4' />
-          </Button>
-          {adminResponse && (
-            <div className='rounded-xl border border-border/50 bg-muted/30 p-4'>
-              <pre className='overflow-x-auto font-mono text-xs text-muted-foreground'>
-                <code>{adminResponse}</code>
-              </pre>
-            </div>
-          )}
-        </div>
+        )}
+
+        {!diagResult && !isLoading && (
+          <p className='text-sm text-muted-foreground text-center py-4'>
+            Click above to run a live health check against the backend
+          </p>
+        )}
       </CardContent>
     </Card>
-  )
+  );
+}
+
+// Audit Logs Card
+function AuditLogsCard() {
+  const [logs, setLogs] = useState<AuditLogEntry[]>([]);
+  const [total, setTotal] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+
+  const fetchLogs = async () => {
+    setIsLoading(true);
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
+      const res = await fetch(`${apiUrl}/api/orchestrator/audit-logs?limit=30`);
+      const data = await res.json();
+      setLogs(data.logs || []);
+      setTotal(data.total || 0);
+      setHasLoaded(true);
+    } catch (error) {
+      console.error('Failed to fetch audit logs:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const formatTime = (ts: string) => {
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  };
+
+  return (
+    <Card className='relative col-span-12 lg:col-span-7 h-full overflow-hidden'>
+      <CardWatermark opacity={3} scale={1.1} />
+      <CardHeader className='relative z-10'>
+        <div className='flex items-center justify-between'>
+          <CardTitle className='flex items-center gap-2'>
+            <Icons.fileText className='h-5 w-5 text-brand-cornflower' strokeWidth={1.5} />
+            Audit Logs
+            {total > 0 && (
+              <span className='ml-2 rounded-full bg-brand-navy/10 px-2.5 py-0.5 text-xs font-semibold text-brand-navy'>
+                {total.toLocaleString()} total
+              </span>
+            )}
+          </CardTitle>
+          <Button onClick={fetchLogs} disabled={isLoading} variant='outline' size='sm'>
+            {isLoading ? <Icons.loader className='h-4 w-4 animate-spin' /> : <Icons.arrowRight className='h-4 w-4' />}
+            <span className='ml-1.5'>{hasLoaded ? 'Refresh' : 'Load Logs'}</span>
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className='relative z-10'>
+        {!hasLoaded && !isLoading ? (
+          <div className='text-center py-8 text-muted-foreground'>
+            <Icons.fileText className='mx-auto h-10 w-10 opacity-30 mb-3' />
+            <p className='text-sm'>Trigger a pipeline or click Load Logs to see audit entries</p>
+          </div>
+        ) : isLoading ? (
+          <div className='flex items-center justify-center py-8'>
+            <Icons.loader className='h-6 w-6 animate-spin text-brand-cornflower' />
+          </div>
+        ) : logs.length === 0 ? (
+          <div className='text-center py-8 text-muted-foreground'>
+            <p className='text-sm'>No audit logs yet. Run a pipeline to generate entries.</p>
+          </div>
+        ) : (
+          <div className='overflow-hidden rounded-lg border border-gray-100'>
+            <div className='max-h-[400px] overflow-y-auto'>
+              <table className='w-full text-left text-sm'>
+                <thead className='sticky top-0 border-b border-gray-100 bg-gray-50/95 backdrop-blur'>
+                  <tr>
+                    <th className='px-3 py-2 text-xs font-medium text-gray-500'>Time</th>
+                    <th className='px-3 py-2 text-xs font-medium text-gray-500'>Method</th>
+                    <th className='px-3 py-2 text-xs font-medium text-gray-500'>Endpoint</th>
+                    <th className='px-3 py-2 text-xs font-medium text-gray-500'>Status</th>
+                    <th className='px-3 py-2 text-xs font-medium text-gray-500'>Latency</th>
+                  </tr>
+                </thead>
+                <tbody className='divide-y divide-gray-50'>
+                  {logs.map((log) => (
+                    <tr key={log.id} className='hover:bg-gray-50/50 transition-colors'>
+                      <td className='whitespace-nowrap px-3 py-2 text-xs text-gray-500 font-mono'>
+                        {formatTime(log.timestamp)}
+                      </td>
+                      <td className='px-3 py-2'>
+                        {log.http_method && (
+                          <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold ${methodColors[log.http_method] || 'bg-gray-100 text-gray-700'}`}>
+                            {log.http_method}
+                          </span>
+                        )}
+                      </td>
+                      <td className='px-3 py-2 text-xs text-gray-700 font-mono max-w-[220px] truncate' title={log.endpoint || log.description}>
+                        {log.endpoint || log.description}
+                      </td>
+                      <td className='px-3 py-2'>
+                        {log.response_status ? (
+                          <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                            log.response_status >= 500 ? 'bg-red-100 text-red-700' :
+                            log.response_status >= 400 ? 'bg-amber-100 text-amber-700' :
+                            'bg-emerald-100 text-emerald-700'
+                          }`}>
+                            {log.response_status}
+                          </span>
+                        ) : (
+                          <span className={`text-xs ${log.success === 'true' ? 'text-emerald-600' : 'text-red-600'}`}>
+                            {log.success === 'true' ? '✓' : '✗'}
+                          </span>
+                        )}
+                      </td>
+                      <td className='px-3 py-2 text-xs text-gray-500 font-mono'>
+                        {log.response_time_ms ? `${log.response_time_ms.toFixed(0)}ms` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 interface TraceStep {
@@ -325,6 +475,7 @@ function WorkflowTrigger() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [orchestratorResult, setOrchestratorResult] = useState<OrchestratorResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'trace' | 'json'>('trace');
 
   // Load previous result from localStorage on mount
   useEffect(() => {
@@ -444,23 +595,48 @@ function WorkflowTrigger() {
             </div>
           </div>
 
-          {/* Trace Timeline */}
-          <div className="rounded-xl border bg-white p-6 shadow-sm">
-            <h3 className="font-bold text-brand-navy text-lg mb-4">Execution Trace</h3>
-            <div className="space-y-2">
-              {orchestratorResult.trace?.steps?.map((step, idx) => (
-                <div key={idx} className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-slate-50 transition-colors">
-                  <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${statusDot[step.status] || 'bg-slate-400'}`} />
-                  <span className="font-semibold text-brand-navy text-sm w-40 shrink-0">{step.agent}</span>
-                  <span className="text-sm text-muted-foreground flex-1">{step.step.replace(/_/g, ' ')}</span>
-                  <span className="text-xs font-mono text-muted-foreground w-16 text-right">{step.latency_ms}ms</span>
-                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${step.status === 'success' ? 'bg-emerald-100 text-emerald-700' : step.status === 'error' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
-                    {step.status}
-                  </span>
-                </div>
-              ))}
-            </div>
+          {/* Tab Selection */}
+          <div className="flex border-b border-slate-200">
+            <button
+              onClick={() => setActiveTab('trace')}
+              className={`px-6 py-2.5 font-bold text-sm transition-all border-b-2 ${activeTab === 'trace' ? 'border-brand-purple text-brand-purple' : 'border-transparent text-muted-foreground hover:text-brand-navy'}`}
+            >
+              Execution Trace
+            </button>
+            <button
+              onClick={() => setActiveTab('json')}
+              className={`px-6 py-2.5 font-bold text-sm transition-all border-b-2 ${activeTab === 'json' ? 'border-brand-purple text-brand-purple' : 'border-transparent text-muted-foreground hover:text-brand-navy'}`}
+            >
+              Raw JSON Details
+            </button>
           </div>
+
+          {/* Conditional Content */}
+          {activeTab === 'trace' ? (
+            <div className="rounded-xl border bg-white p-6 shadow-sm">
+              <h3 className="font-bold text-brand-navy text-lg mb-4">Execution Trace</h3>
+              <div className="space-y-2">
+                {orchestratorResult.trace?.steps?.map((step, idx) => (
+                  <div key={idx} className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-slate-50 transition-colors">
+                    <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${statusDot[step.status] || 'bg-slate-400'}`} />
+                    <span className="font-semibold text-brand-navy text-sm w-40 shrink-0">{step.agent}</span>
+                    <span className="text-sm text-muted-foreground flex-1">{step.step.replace(/_/g, ' ')}</span>
+                    <span className="text-xs font-mono text-muted-foreground w-16 text-right">{step.latency_ms}ms</span>
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${step.status === 'success' ? 'bg-emerald-100 text-emerald-700' : step.status === 'error' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
+                      {step.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-xl border bg-slate-900 p-6 shadow-xl text-white">
+              <h3 className="font-bold text-emerald-400 text-lg mb-4">Backend Response Payload</h3>
+              <pre className="text-xs font-mono overflow-x-auto p-4 bg-slate-950 rounded-lg leading-relaxed max-h-96 overflow-y-auto">
+                {JSON.stringify(orchestratorResult, null, 2)}
+              </pre>
+            </div>
+          )}
 
           {/* Navigation Buttons */}
           <div className="flex gap-3">
@@ -539,12 +715,13 @@ export default function HomePage() {
         <ActivityChart className='col-span-12' />
       </motion.div>
 
-      {/* System Diagnostics */}
+      {/* System Diagnostics & Audit Logs — Side by Side */}
       <motion.div
         className='grid gap-6 lg:grid-cols-12'
         variants={itemVariants}
       >
         <DiagnosticsCard />
+        <AuditLogsCard />
       </motion.div>
     </motion.div>
   )

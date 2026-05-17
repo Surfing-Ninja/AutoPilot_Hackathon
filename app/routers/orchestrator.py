@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
+import httpx
 from datetime import datetime
 from typing import Any
 
@@ -32,6 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.models.audit import AuditLog
 from app.models.orchestration import ExecutionContext, WorkbenchItem
 
 from app.schemas.orchestrator import (
@@ -97,50 +100,108 @@ def _build_agent_result(
 
 
 # ─────────────────────────────────────────────────────────────
-# ROUTING ACTIONS (Mock implementations)
+# ROUTING ACTIONS (Real Integrations)
 # ─────────────────────────────────────────────────────────────
 
-def _route_to_workbench(orchestrator_output: dict[str, Any]) -> RoutingResult:
-    """Mock: Insert a record into the Workbench table."""
+async def _route_to_workbench(orchestrator_output: dict[str, Any]) -> RoutingResult:
+    """Insert a record into the Workbench table (handled in the main endpoint)."""
     ticket_id = str(uuid.uuid4())
     log.info(
-        "📋 [WORKBENCH] Inserted ticket %s — lead requires manual review.",
+        "📋 [WORKBENCH] Preparing ticket %s — lead requires manual review.",
         ticket_id,
     )
     return RoutingResult(
         command="ROUTE_TO_WORKBENCH",
         action_taken="workbench_insert",
-        detail=f"Workbench ticket {ticket_id} created for manual human-in-the-loop review.",
+        detail=f"Workbench ticket prepared for manual human-in-the-loop review.",
     )
 
 
-def _trigger_slack_escalation(orchestrator_output: dict[str, Any]) -> RoutingResult:
-    """Mock: Fire a Slack escalation alert."""
-    log.warning(
-        "🚨 [SLACK ESCALATION] High-risk lead detected! "
-        "Escalation triggered — notifying #risk-alerts channel. "
-        "Payload keys: %s",
-        list(orchestrator_output.keys()),
-    )
-    return RoutingResult(
-        command="TRIGGER_SLACK_ESCALATION",
-        action_taken="slack_escalation_sent",
-        detail="Slack escalation dispatched to #risk-alerts. VP of Sales has been notified.",
-    )
+async def _trigger_slack_escalation(orchestrator_output: dict[str, Any]) -> RoutingResult:
+    """Fire a real Slack escalation alert using webhooks."""
+    webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+    
+    # Extract some useful info for the Slack message
+    company = orchestrator_output.get("company_name", "Unknown Company")
+    risk_score = orchestrator_output.get("risk_score", orchestrator_output.get("unified_risk_score", "N/A"))
+    reason = orchestrator_output.get("reasoning", "High risk detected.")
+    
+    payload = {
+        "text": f"🚨 *High-Risk Lead Escalated: {company}*\n"
+                f"*Risk Score:* {risk_score}\n"
+                f"*Reasoning:* {reason}"
+    }
+
+    if webhook_url:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(webhook_url, json=payload, timeout=5.0)
+                resp.raise_for_status()
+            
+            log.warning("🚨 [SLACK ESCALATION] Sent to %s", company)
+            return RoutingResult(
+                command="TRIGGER_SLACK_ESCALATION",
+                action_taken="slack_escalation_sent",
+                detail="Slack escalation dispatched to configured webhook channel.",
+            )
+        except Exception as e:
+            log.error("Failed to send Slack escalation: %s", e)
+            return RoutingResult(
+                command="TRIGGER_SLACK_ESCALATION",
+                action_taken="slack_escalation_failed",
+                detail=f"Failed to dispatch Slack escalation: {e}",
+            )
+    else:
+        log.warning("🚨 [SLACK ESCALATION] Webhook URL not configured. Simulating escalation for %s.", company)
+        return RoutingResult(
+            command="TRIGGER_SLACK_ESCALATION",
+            action_taken="slack_escalation_simulated",
+            detail="Slack escalation simulated (SLACK_WEBHOOK_URL not set).",
+        )
 
 
-def _route_to_crm_auto(orchestrator_output: dict[str, Any]) -> RoutingResult:
-    """Mock: Auto-update CRM with a successful lead conversion."""
-    crm_record_id = str(uuid.uuid4())
-    log.info(
-        "✅ [CRM] Auto-routed lead → CRM record %s created/updated.",
-        crm_record_id,
-    )
-    return RoutingResult(
-        command="ROUTE_TO_CRM_AUTO",
-        action_taken="crm_auto_update",
-        detail=f"CRM record {crm_record_id} auto-updated. Lead marked as qualified.",
-    )
+async def _route_to_crm_auto(orchestrator_output: dict[str, Any]) -> RoutingResult:
+    """Auto-update CRM with a successful lead conversion via API push."""
+    crm_url = os.getenv("CRM_API_URL")
+    crm_key = os.getenv("CRM_API_KEY", "")
+    
+    company = orchestrator_output.get("company_name", "Unknown Company")
+    
+    payload = {
+        "lead_source": "AutoPilot Orchestrator",
+        "company_name": company,
+        "status": "Qualified",
+        "orchestrator_data": orchestrator_output
+    }
+    
+    if crm_url:
+        try:
+            headers = {"Authorization": f"Bearer {crm_key}"} if crm_key else {}
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(crm_url, json=payload, headers=headers, timeout=5.0)
+                resp.raise_for_status()
+            
+            log.info("✅ [CRM] Auto-routed lead %s to CRM successfully.", company)
+            return RoutingResult(
+                command="ROUTE_TO_CRM_AUTO",
+                action_taken="crm_auto_update",
+                detail="CRM record created/updated successfully via API.",
+            )
+        except Exception as e:
+            log.error("Failed to update CRM for %s: %s", company, e)
+            return RoutingResult(
+                command="ROUTE_TO_CRM_AUTO",
+                action_taken="crm_update_failed",
+                detail=f"Failed to update external CRM: {e}",
+            )
+    else:
+        crm_record_id = str(uuid.uuid4())
+        log.info("✅ [CRM] Auto-routed lead %s (Simulated) → CRM record %s.", company, crm_record_id)
+        return RoutingResult(
+            command="ROUTE_TO_CRM_AUTO",
+            action_taken="crm_auto_update_simulated",
+            detail=f"CRM update simulated (CRM_API_URL not set). Assigned mock ID: {crm_record_id}",
+        )
 
 
 _ROUTING_TABLE: dict[str, Any] = {
@@ -291,7 +352,7 @@ async def process_lead(
     system_command = system_command.strip().upper()
 
     route_fn = _ROUTING_TABLE.get(system_command, _route_to_workbench)
-    routing_result: RoutingResult = route_fn(gov_resp)
+    routing_result: RoutingResult = await route_fn(gov_resp)
 
     trace_steps.append(ExecutionStep(
         step="routing",
@@ -411,3 +472,164 @@ def approve_workbench_item(item_id: str, db: Session = Depends(get_db)):
     item.resolved_at = datetime.utcnow()
     db.commit()
     return {"success": True, "message": "Item approved successfully"}
+
+# ─────────────────────────────────────────────────────────────
+# SYSTEM DIAGNOSTICS
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/diagnostics")
+def run_diagnostics(db: Session = Depends(get_db)):
+    """
+    Run real system diagnostics:
+    - Database connectivity & table row counts
+    - Supervity agent configuration status
+    - Execution history summary
+    """
+    from app.services.supervity_client import AGENT_IDS, SUPERVITY_EXECUTE_URL
+    from sqlalchemy import text
+
+    checks: list[dict[str, Any]] = []
+
+    # ── Database Connectivity ──
+    try:
+        db.execute(text("SELECT 1"))
+        checks.append({
+            "name": "PostgreSQL Connection",
+            "status": "healthy",
+            "detail": "Database connection pool active",
+        })
+    except Exception as exc:
+        checks.append({
+            "name": "PostgreSQL Connection",
+            "status": "error",
+            "detail": str(exc),
+        })
+
+    # ── Table Row Counts ──
+    try:
+
+        audit_count = db.execute(text("SELECT COUNT(*) FROM audit_logs")).scalar() or 0
+        exec_count = db.execute(text("SELECT COUNT(*) FROM execution_contexts")).scalar() or 0
+        wb_count = db.execute(text("SELECT COUNT(*) FROM workbench_items")).scalar() or 0
+
+        checks.append({
+            "name": "Audit Logs Table",
+            "status": "healthy",
+            "detail": f"{audit_count} records",
+            "count": audit_count,
+        })
+        checks.append({
+            "name": "Execution Contexts",
+            "status": "healthy",
+            "detail": f"{exec_count} pipeline runs stored",
+            "count": exec_count,
+        })
+        checks.append({
+            "name": "Workbench Items",
+            "status": "healthy",
+            "detail": f"{wb_count} items queued",
+            "count": wb_count,
+        })
+    except Exception as exc:
+        checks.append({
+            "name": "Table Stats",
+            "status": "error",
+            "detail": str(exc),
+        })
+
+    # ── Supervity Agent Config ──
+    supervity_ok = bool(SUPERVITY_EXECUTE_URL)
+    agents_configured = sum(1 for v in AGENT_IDS.values() if v)
+    checks.append({
+        "name": "Supervity API Endpoint",
+        "status": "healthy" if supervity_ok else "warning",
+        "detail": SUPERVITY_EXECUTE_URL[:60] + "…" if supervity_ok else "Not configured — using fallback responses",
+    })
+    checks.append({
+        "name": "AI Agent Workflows",
+        "status": "healthy" if agents_configured == len(AGENT_IDS) else "warning",
+        "detail": f"{agents_configured}/{len(AGENT_IDS)} agents configured",
+        "count": agents_configured,
+    })
+
+    # ── Latest Pipeline Run ──
+    try:
+        latest = (
+            db.query(ExecutionContext)
+            .order_by(ExecutionContext.created_at.desc())
+            .first()
+        )
+        if latest:
+            checks.append({
+                "name": "Last Pipeline Run",
+                "status": "healthy",
+                "detail": f"{latest.company_name} — {latest.system_command}",
+                "timestamp": latest.created_at.isoformat() if latest.created_at else None,
+            })
+        else:
+            checks.append({
+                "name": "Last Pipeline Run",
+                "status": "info",
+                "detail": "No pipelines executed yet",
+            })
+    except Exception:
+        pass
+
+    overall = "healthy"
+    if any(c["status"] == "error" for c in checks):
+        overall = "error"
+    elif any(c["status"] == "warning" for c in checks):
+        overall = "warning"
+
+    return {
+        "overall": overall,
+        "checks": checks,
+        "timestamp": _now_iso(),
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# AUDIT LOGS (Dashboard-facing — no admin session required)
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/audit-logs")
+def get_recent_audit_logs(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    """
+    Fetch recent audit logs for the dashboard.
+    Returns the latest N audit log entries.
+    """
+    from sqlalchemy import desc
+
+    logs = (
+        db.query(AuditLog)
+        .order_by(desc(AuditLog.timestamp))
+        .limit(min(limit, 100))
+        .all()
+    )
+
+    return {
+        "total": db.query(AuditLog).count(),
+        "logs": [
+            {
+                "id": log.id,
+                "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+                "actor_email": log.actor_email,
+                "actor_ip": log.actor_ip,
+                "action": log.action,
+                "category": log.category,
+                "severity": log.severity,
+                "description": log.description,
+                "success": log.success,
+                "error_message": log.error_message,
+                "endpoint": log.endpoint,
+                "http_method": log.http_method,
+                "response_status": log.response_status,
+                "response_time_ms": round(log.response_time_ms, 2) if log.response_time_ms else None,
+                "is_middleware": log.is_middleware,
+            }
+            for log in logs
+        ],
+    }

@@ -78,75 +78,126 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
  */
 function MarkdownContent({ content }: { content: string }) {
   const lines = content.split('\n')
+  const renderedElements: React.ReactNode[] = []
   
-  return (
-    <div className="space-y-2 text-sm leading-relaxed">
-      {lines.map((line, i) => {
-        const trimmedLine = line.trim()
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    const trimmedLine = line.trim()
+    
+    // Check if it's a table row
+    if (trimmedLine.startsWith('|') && trimmedLine.endsWith('|')) {
+      const tableLines: string[] = []
+      while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) {
+        tableLines.push(lines[i].trim())
+        i++
+      }
+      
+      if (tableLines.length >= 1) {
+        // Parse the header row
+        const headers = tableLines[0]
+          .split('|')
+          .map(s => s.trim())
+          .filter((_, idx, arr) => idx > 0 && idx < arr.length - 1)
         
-        // Empty line - add spacing
-        if (!trimmedLine) {
-          return <div key={i} className="h-1" />
+        let hasDivider = false
+        let dataRowsStart = 1
+        if (tableLines.length > 1 && tableLines[1].includes('---')) {
+          hasDivider = true
+          dataRowsStart = 2
         }
         
-        // Headers (##, ###)
-        if (trimmedLine.startsWith('### ')) {
-          return (
-            <h4 key={i} className="font-semibold text-foreground mt-3 first:mt-0">
-              {renderInlineMarkdown(trimmedLine.slice(4))}
-            </h4>
-          )
-        }
-        if (trimmedLine.startsWith('## ')) {
-          return (
-            <h3 key={i} className="font-bold text-foreground mt-3 first:mt-0">
-              {renderInlineMarkdown(trimmedLine.slice(3))}
-            </h3>
-          )
-        }
+        const dataRows = tableLines.slice(dataRowsStart).map(row => 
+          row.split('|').map(s => s.trim()).filter((_, idx, arr) => idx > 0 && idx < arr.length - 1)
+        )
         
-        // Blockquote
-        if (trimmedLine.startsWith('> ')) {
-          return (
-            <blockquote
-              key={i}
-              className="pl-3 border-l-2 border-brand-cornflower/50 text-muted-foreground italic"
-            >
-              {renderInlineMarkdown(trimmedLine.slice(2))}
-            </blockquote>
-          )
-        }
-        
-        // Bullet points (* or -)
-        if (/^[*\-]\s/.test(trimmedLine)) {
-          return (
-            <div key={i} className="flex gap-2 pl-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-brand-cornflower/60 mt-2 flex-shrink-0" />
-              <span>{renderInlineMarkdown(trimmedLine.replace(/^[*\-]\s/, ''))}</span>
-            </div>
-          )
-        }
-        
-        // Numbered lists
-        if (/^\d+\.\s/.test(trimmedLine)) {
-          const match = trimmedLine.match(/^(\d+)\.\s(.*)/)
-          if (match) {
-            return (
-              <div key={i} className="flex gap-2 pl-1">
-                <span className="text-brand-cornflower font-medium min-w-[1.25rem]">
-                  {match[1]}.
-                </span>
-                <span>{renderInlineMarkdown(match[2])}</span>
-              </div>
-            )
-          }
-        }
-        
-        // Regular paragraph
-        return <p key={i}>{renderInlineMarkdown(trimmedLine)}</p>
-      })}
-    </div>
-  )
+        renderedElements.push(
+          <div key={`table-${i}`} className="my-3 overflow-x-auto rounded-xl border border-gray-200 shadow-sm bg-white pointer-events-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  {headers.map((h, idx) => (
+                    <th
+                      key={idx}
+                      scope="col"
+                      className="px-4 py-2 text-left text-xs font-semibold text-brand-navy uppercase tracking-wider whitespace-nowrap"
+                    >
+                      {renderInlineMarkdown(h)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 bg-white">
+                {dataRows.map((row, rowIdx) => (
+                  <tr key={rowIdx} className="hover:bg-gray-50/50 transition-colors">
+                    {row.map((cell, cellIdx) => (
+                      <td key={cellIdx} className="px-4 py-2 text-sm text-muted-foreground whitespace-nowrap">
+                        {renderInlineMarkdown(cell)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      }
+      continue
+    }
+    
+    // Regular markdown elements
+    if (!trimmedLine) {
+      renderedElements.push(<div key={i} className="h-1" />)
+    } else if (trimmedLine.startsWith('### ')) {
+      renderedElements.push(
+        <h4 key={i} className="font-semibold text-foreground mt-3 first:mt-0">
+          {renderInlineMarkdown(trimmedLine.slice(4))}
+        </h4>
+      )
+    } else if (trimmedLine.startsWith('## ')) {
+      renderedElements.push(
+        <h3 key={i} className="font-bold text-foreground mt-3 first:mt-0">
+          {renderInlineMarkdown(trimmedLine.slice(3))}
+        </h3>
+      )
+    } else if (trimmedLine.startsWith('> ')) {
+      renderedElements.push(
+        <blockquote
+          key={i}
+          className="pl-3 border-l-2 border-brand-cornflower/50 text-muted-foreground italic my-1.5"
+        >
+          {renderInlineMarkdown(trimmedLine.slice(2))}
+        </blockquote>
+      )
+    } else if (/^[*\-]\s/.test(trimmedLine)) {
+      renderedElements.push(
+        <div key={i} className="flex gap-2 pl-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-brand-cornflower/60 mt-2 flex-shrink-0" />
+          <span>{renderInlineMarkdown(trimmedLine.replace(/^[*\-]\s/, ''))}</span>
+        </div>
+      )
+    } else if (/^\d+\.\s/.test(trimmedLine)) {
+      const match = trimmedLine.match(/^(\d+)\.\s(.*)/)
+      if (match) {
+        renderedElements.push(
+          <div key={i} className="flex gap-2 pl-1">
+            <span className="text-brand-cornflower font-medium min-w-[1.25rem]">
+              {match[1]}.
+            </span>
+            <span>{renderInlineMarkdown(match[2])}</span>
+          </div>
+        )
+      } else {
+        renderedElements.push(<p key={i}>{renderInlineMarkdown(trimmedLine)}</p>)
+      }
+    } else {
+      renderedElements.push(<p key={i}>{renderInlineMarkdown(trimmedLine)}</p>)
+    }
+    
+    i++
+  }
+  
+  return <div className="space-y-2 text-sm leading-relaxed">{renderedElements}</div>
 }
 
 export function ChatMessage({ message, userName, userImage }: ChatMessageProps) {

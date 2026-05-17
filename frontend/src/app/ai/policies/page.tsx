@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
+import { apiClient } from '@/lib/api-client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { CardWatermark } from '@/components/ui/card-watermark'
@@ -83,16 +84,19 @@ export default function AIPoliciesPage() {
   const [isSavingStructured, setIsSavingStructured] = useState(false)
 
   // ============================================================================
-  // Data — Loaded from demo data (replace with API fetch)
+  // Data — Loaded from API
   // ============================================================================
 
-  const loadPolicies = useCallback(() => {
+  const loadPolicies = useCallback(async () => {
     setIsLoading(true)
-    // Simulate loading — replace with real API call
-    setTimeout(() => {
-      setPolicies(DEMO_POLICIES)
+    try {
+      const data = await apiClient.get<Policy[]>('/api/ai/policies/')
+      setPolicies(data)
+    } catch (error) {
+      console.error('Failed to load policies:', error)
+    } finally {
       setIsLoading(false)
-    }, 300)
+    }
   }, [])
 
   useEffect(() => {
@@ -117,14 +121,22 @@ export default function AIPoliciesPage() {
     loadPolicies()
   }, [loadPolicies])
 
-  const togglePolicyStatus = useCallback(async (id: string, _isActive: boolean) => {
-    // Toggle locally (replace with API call)
-    setPolicies(prev => prev.map(p => p.id === id ? { ...p, is_active: !p.is_active } : p))
+  const togglePolicyStatus = useCallback(async (id: string, isActive: boolean) => {
+    try {
+      await apiClient.put(`/api/ai/policies/${id}/status?is_active=${!isActive}`, {})
+      setPolicies(prev => prev.map(p => p.id === id ? { ...p, is_active: !isActive } : p))
+    } catch (error) {
+      console.error('Failed to toggle policy status:', error)
+    }
   }, [])
 
   const deletePolicy = useCallback(async (id: string) => {
-    // Delete locally (replace with API call)
-    setPolicies(prev => prev.filter(p => p.id !== id))
+    try {
+      await apiClient.delete(`/api/ai/policies/${id}`)
+      setPolicies(prev => prev.filter(p => p.id !== id))
+    } catch (error) {
+      console.error('Failed to delete policy:', error)
+    }
   }, [])
 
   const handlePolicyCreate = async (policyData: {
@@ -138,28 +150,25 @@ export default function AIPoliciesPage() {
     tags: string[]
     priority: number
   }) => {
-    // Add locally (replace with API call)
-    const newPolicy: Policy = {
-      id: `user-${Date.now()}`,
-      name: policyData.name,
-      description: policyData.description,
-      natural_language: policyData.naturalLanguage,
-      summary: policyData.description,
-      policy_type: policyData.policyType,
-      dsl: policyData.dsl as Policy['dsl'],
-      refined_instruction: policyData.refinedInstruction,
-      ai_instruction: policyData.naturalLanguage,
-      entity_name: policyData.entityName,
-      is_active: true,
-      priority: policyData.priority,
-      tags: policyData.tags,
-      execution_count: 0,
-      last_executed_at: null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+    try {
+      await apiClient.post('/api/ai/policies/', {
+        name: policyData.name,
+        description: policyData.description,
+        natural_language: policyData.naturalLanguage,
+        policy_type: policyData.policyType,
+        dsl: policyData.dsl,
+        refined_instruction: policyData.refinedInstruction,
+        ai_instruction: policyData.naturalLanguage,
+        entity_name: policyData.entityName,
+        is_active: true,
+        priority: policyData.priority,
+        tags: policyData.tags,
+      })
+      await loadPolicies()
+      setActiveTab('policies')
+    } catch (error) {
+      console.error('Failed to create policy:', error)
     }
-    setPolicies(prev => [newPolicy, ...prev])
-    setActiveTab('policies')
   }
 
   // ============================================================================

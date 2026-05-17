@@ -37,6 +37,7 @@ from .core.storage import GCSStorage, LocalStorage, StorageBackend
 from .middleware import AuditMiddleware
 from .routers import (
     admin_router,
+    ai_router,
     audit_router,
     auth_router,
     examples_router,
@@ -161,6 +162,9 @@ api_router.include_router(orchestrator_router)
 
 # AI Policies mock endpoint
 api_router.include_router(policies_router)
+
+# AI Assistant endpoint
+api_router.include_router(ai_router)
 # =============================================================================
 # FILE STORAGE ENDPOINTS (kept inline for path matching order)
 # =============================================================================
