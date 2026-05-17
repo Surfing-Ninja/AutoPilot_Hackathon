@@ -25,3 +25,10 @@ python-json-logger
 sqlalchemy
 psycopg2-binary
 alembic
+
+# Document Intelligence Dependencies
+pymupdf
+pytesseract
+langchain
+langchain-community
+chromadb
