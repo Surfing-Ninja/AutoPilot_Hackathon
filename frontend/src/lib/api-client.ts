@@ -1,6 +1,7 @@
 import { getSession } from 'next-auth/react'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 
+  (process.env.NODE_ENV === 'production' ? 'https://autopilot-hackathon.onrender.com' : 'http://localhost:8001')
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || ''
 
 /**
