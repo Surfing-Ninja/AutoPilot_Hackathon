@@ -253,7 +253,7 @@ function DiagnosticsCard() {
   const runDiagnostics = async () => {
     setIsLoading(true);
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
+      const apiUrl = 'https://autopilot-hackathon.onrender.com';
       const res = await fetch(`${apiUrl}/api/orchestrator/diagnostics`);
       const data = await res.json();
       setDiagResult(data);
@@ -332,7 +332,7 @@ function AuditLogsCard() {
   const fetchLogs = async () => {
     setIsLoading(true);
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
+      const apiUrl = 'https://autopilot-hackathon.onrender.com';
       const res = await fetch(`${apiUrl}/api/orchestrator/audit-logs?limit=30`);
       const data = await res.json();
       setLogs(data.logs || []);
@@ -498,7 +498,7 @@ function WorkflowTrigger() {
       };
 
       try {
-          const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
+          const apiUrl = 'https://autopilot-hackathon.onrender.com';
           const response = await fetch(`${apiUrl}/api/orchestrator/process_lead`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },

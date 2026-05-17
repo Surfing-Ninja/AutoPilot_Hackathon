@@ -101,7 +101,7 @@ export default function RegisterPage() {
     setErrors({})
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001'
+      const apiUrl = 'https://autopilot-hackathon.onrender.com'
       const basePath = process.env.NEXT_PUBLIC_BASE_PATH || ''
       const response = await fetch(`${apiUrl}${basePath}/api/auth/register`, {
         method: 'POST',
