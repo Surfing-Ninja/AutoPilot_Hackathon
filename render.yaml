@@ -55,4 +55,4 @@ services:
       # Crucial: Next.js bakes public env vars at BUILD time
       # Replace the value below with your actual deployed Backend URL on Render once created.
       - key: NEXT_PUBLIC_API_URL
-        value: https://autopilot-backend.onrender.com
+        value: https://autopilot-hackathon.onrender.com
