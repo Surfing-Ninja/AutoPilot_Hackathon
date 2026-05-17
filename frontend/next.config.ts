@@ -14,7 +14,7 @@ const nextConfig: NextConfig = {
 
   env: {
     NEXT_PUBLIC_API_URL:
-      process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001',
+      process.env.NEXT_PUBLIC_API_URL || (process.env.NODE_ENV === 'production' ? 'https://autopilot-hackathon.onrender.com' : 'http://localhost:8001'),
     INTERNAL_API_URL: process.env.INTERNAL_API_URL || 'http://backend:8000',
   },
   serverExternalPackages: [],
